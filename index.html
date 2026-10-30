@@ -7,6 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Подключаем MQTT для DMI ID -->
+  <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 
   <style>
     :root {
@@ -174,6 +177,7 @@
       cursor: pointer;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
       transition: background 0.15s ease;
     }
@@ -193,6 +197,7 @@
       cursor: pointer;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
       transition: all 0.15s ease;
     }
@@ -758,6 +763,50 @@
       margin-top: 8px;
       display: none;
     }
+
+    /* DMI ID Styles */
+    .divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 20px 0;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .divider span {
+      padding: 0 10px;
+    }
+
+    #dmiLinkContainer {
+      text-align: center;
+      display: none;
+    }
+
+    .dmi-link-text {
+      word-break: break-all;
+      font-size: 13px;
+      color: var(--accent);
+      background: var(--bg-card);
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+
+    .dmi-waiting {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 10px;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -781,7 +830,6 @@
         <svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
       </button>
 
-      <!-- Upload Button: Всегда видна -->
       <button class="btn-primary" id="openAddModalBtn">
         <svg class="svg-icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
         <span>Добавить трек</span>
@@ -923,9 +971,22 @@
 
         <div class="error-msg" id="authErrorMsg"></div>
 
-        <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; height: 42px; margin-top: 16px;" id="authSubmitBtn">
+        <button type="submit" class="btn-primary" style="width: 100%; height: 42px; margin-top: 16px;" id="authSubmitBtn">
           Войти
         </button>
+
+        <!-- DMI ID Login -->
+        <div class="divider"><span>или</span></div>
+        <button type="button" class="btn-outline" id="btnLoginDmi" style="width: 100%; height: 42px;">
+          Войти через DMI ID
+        </button>
+        
+        <!-- Контейнер для ссылки DMI -->
+        <div id="dmiLinkContainer">
+          <div class="dmi-link-text" id="dmiLinkText"></div>
+          <button type="button" class="btn-primary" id="btnGoDmi" style="width: 100%;">Перейти</button>
+          <div class="dmi-waiting" id="dmiWaiting">Ожидание подтверждения...</div>
+        </div>
       </form>
     </div>
   </div>
@@ -968,7 +1029,6 @@
     </div>
   </div>
 
-  <!-- Firebase Scripts -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
     import { 
@@ -1031,6 +1091,15 @@
     const registerExtraFields = document.getElementById('registerExtraFields');
     const authErrorMsg = document.getElementById('authErrorMsg');
     const authSubmitBtn = document.getElementById('authSubmitBtn');
+    const authTabs = document.querySelector('.auth-tabs');
+
+    // DMI ID Elements
+    const btnLoginDmi = document.getElementById('btnLoginDmi');
+    const dmiLinkContainer = document.getElementById('dmiLinkContainer');
+    const dmiLinkText = document.getElementById('dmiLinkText');
+    const btnGoDmi = document.getElementById('btnGoDmi');
+    const dmiWaiting = document.getElementById('dmiWaiting');
+    let dmiMqttClient = null;
 
     function switchAuthTab(mode) {
       authMode = mode;
@@ -1055,12 +1124,100 @@
     tabLoginBtn.addEventListener('click', () => switchAuthTab('login'));
     tabRegisterBtn.addEventListener('click', () => switchAuthTab('register'));
 
-    document.getElementById('openAuthModalBtn')?.addEventListener('click', () => {
+    function openAuthModal() {
       authModal.classList.add('open');
-    });
+      resetAuthModalState();
+    }
+
+    document.getElementById('openAuthModalBtn')?.addEventListener('click', openAuthModal);
 
     document.getElementById('closeAuthModal').addEventListener('click', () => {
       authModal.classList.remove('open');
+      resetAuthModalState();
+    });
+
+    function resetAuthModalState() {
+      authForm.style.display = 'block';
+      authTabs.style.display = 'flex';
+      dmiLinkContainer.style.display = 'none';
+      if (dmiMqttClient) {
+        dmiMqttClient.end();
+        dmiMqttClient = null;
+      }
+      switchAuthTab('login');
+    }
+
+    /* --- DMI ID LOGIN LOGIC --- */
+    btnLoginDmi.addEventListener('click', () => {
+      // Скрываем стандартную форму
+      authForm.style.display = 'block'; 
+      document.getElementById('authEmail').parentElement.style.display = 'none';
+      document.getElementById('authPassword').parentElement.style.display = 'none';
+      registerExtraFields.style.display = 'none';
+      authSubmitBtn.style.display = 'none';
+      document.querySelector('.divider').style.display = 'none';
+      btnLoginDmi.style.display = 'none';
+      
+      authTabs.style.display = 'none';
+      document.getElementById('authModalTitle').textContent = 'Вход через DMI ID';
+      document.getElementById('authModalSub').textContent = 'Откройте ссылку на телефоне и подтвердите вход.';
+
+      // Показываем контейнер со ссылкой
+      dmiLinkContainer.style.display = 'block';
+      dmiWaiting.style.display = 'block';
+
+      // Генерируем сессию и ссылку с параметрами
+      const sessionId = Math.random().toString(36).substring(2, 10).toUpperCase();
+      const appName = "VIBE • МУЗЫКА"; 
+      
+      // ВАЖНО: Добавляем &AppInfo=DMI
+      const link = `http://pasport-dmi.cc.cd/auth.html?session=${sessionId}&app=${encodeURIComponent(appName)}&AppInfo=DMI`;
+      
+      dmiLinkText.textContent = link;
+      
+      btnGoDmi.onclick = () => window.open(link, '_blank');
+
+      // Подключаемся к MQTT для ожидания ответа
+      if (dmiMqttClient) dmiMqttClient.end();
+      dmiMqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+      
+      dmiMqttClient.on('connect', () => {
+        dmiMqttClient.subscribe(`dmi/auth/session/${sessionId}`);
+      });
+
+      dmiMqttClient.on('message', (topic, message) => {
+        try {
+          const data = JSON.parse(message.toString());
+          if (data.status === 'success') {
+            // Успешный вход через DMI!
+            const mockUser = {
+              displayName: data.name || 'Пользователь DMI',
+              email: data.phone + '@dmi.id',
+              uid: 'dmi_' + data.phone,
+              isDmi: true
+            };
+            
+            // Сохраняем локально
+            localStorage.setItem('vibe_dmi_user', JSON.stringify(mockUser));
+            currentUser = mockUser;
+            isArtist = false; 
+            localStorage.setItem('vibe_is_artist', 'false');
+            
+            renderAuthHeader(true);
+            authModal.classList.remove('open');
+            
+            dmiMqttClient.end();
+            resetAuthModalState(); 
+            
+            // Сбрасываем поля формы
+            document.getElementById('authEmail').parentElement.style.display = 'block';
+            document.getElementById('authPassword').parentElement.style.display = 'block';
+            authSubmitBtn.style.display = 'block';
+            document.querySelector('.divider').style.display = 'flex';
+            btnLoginDmi.style.display = 'flex';
+          }
+        } catch(e) {}
+      });
     });
 
     authForm.addEventListener('submit', async (e) => {
@@ -1073,6 +1230,7 @@
 
       try {
         authSubmitBtn.disabled = true;
+        localStorage.removeItem('vibe_dmi_user'); // Сбрасываем DMI при обычном входе
 
         if (authMode === 'register') {
           const userCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -1122,28 +1280,35 @@
     });
 
     onAuthStateChanged(auth, async (user) => {
-      currentUser = user;
       if (user) {
+        currentUser = user;
         try {
           const userDoc = await getDoc(doc(db, "users", user.uid));
           if (userDoc.exists()) {
             isArtist = !!userDoc.data().isArtist;
             localStorage.setItem('vibe_is_artist', String(isArtist));
           }
-        } catch (e) {
-          console.error("Error fetching profile:", e);
-        }
+        } catch (e) {}
         renderAuthHeader(true);
       } else {
-        isArtist = false;
-        localStorage.removeItem('vibe_is_artist');
-        renderAuthHeader(false);
+        // Проверяем, может быть есть DMI User в localStorage
+        const savedDmi = localStorage.getItem('vibe_dmi_user');
+        if (savedDmi) {
+          currentUser = JSON.parse(savedDmi);
+          isArtist = false;
+          renderAuthHeader(true);
+        } else {
+          currentUser = null;
+          isArtist = false;
+          localStorage.removeItem('vibe_is_artist');
+          renderAuthHeader(false);
+        }
       }
     });
 
     function renderAuthHeader(isLoggedIn) {
       if (isLoggedIn && currentUser) {
-        const name = currentUser.displayName || currentUser.email.split('@')[0];
+        const name = currentUser.displayName || (currentUser.email ? currentUser.email.split('@')[0] : 'User');
         authContainer.innerHTML = `
           <div class="user-chip">
             <div class="user-avatar">${name.charAt(0).toUpperCase()}</div>
@@ -1155,7 +1320,10 @@
           </div>
         `;
         document.getElementById('logoutBtn').addEventListener('click', () => {
-          signOut(auth);
+          localStorage.removeItem('vibe_dmi_user');
+          signOut(auth).then(() => {
+             if(!auth.currentUser) renderAuthHeader(false);
+          });
         });
       } else {
         authContainer.innerHTML = `
@@ -1164,9 +1332,7 @@
             <span>Войти</span>
           </button>
         `;
-        document.getElementById('openAuthModalBtn').addEventListener('click', () => {
-          authModal.classList.add('open');
-        });
+        document.getElementById('openAuthModalBtn').addEventListener('click', openAuthModal);
       }
     }
 
@@ -1405,7 +1571,7 @@
     });
 
     /* ---------------------------------------------
-       ADD TRACK (Доступно всем без ограничений)
+       ADD TRACK
     --------------------------------------------- */
     const addModal = document.getElementById('addTrackModal');
     openAddModalBtn.addEventListener('click', () => {
